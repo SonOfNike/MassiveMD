@@ -55,4 +55,5 @@ public:
     void write_to_schmem();
     void process_quote(const simdjson::dom::object& obj);
     void process_trade(const simdjson::dom::object& obj);
+    void process_NYSE_imbalance(const simdjson::dom::object& obj);
 };

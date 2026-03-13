@@ -37,17 +37,15 @@ void MDProcessor::process_quote(const simdjson::dom::object& _obj){
         // Try to claim this slot atomically
         if (processed_data_queue.next_write_index.compare_exchange_weak(current_idx, current_idx + 1)) {
             processed_data_queue.data[current_idx].data.m_type = md_type::QUOTE;
-            processed_data_queue.data[current_idx].data.m_symbolId = mSymIDManager->getID(_obj["S"].get_string());
+            processed_data_queue.data[current_idx].data.m_symbolId = mSymIDManager->getID(_obj["sym"].get_string());
             processed_data_queue.data[current_idx].data.m_bid_price = roundToNearestCent(Price(_obj["bp"].get_double() * DOLLAR));
             processed_data_queue.data[current_idx].data.m_ask_price = roundToNearestCent(Price(_obj["ap"].get_double() * DOLLAR));
             processed_data_queue.data[current_idx].data.m_bid_quant = Shares(_obj["bs"].get_int64() * 100);
             processed_data_queue.data[current_idx].data.m_ask_quant = Shares(_obj["as"].get_int64() * 100);
 
             //Timestamp conversion
-            processed_data_queue.data[current_idx].data.m_timestamp = parse_timestring(_obj["t"].get_string());
+            processed_data_queue.data[current_idx].data.m_timestamp = _obj["t"].get_int64() * MILLI_SECONDS;
 
-            // std::cout << "Quote price: " << processed_data_queue.data[current_idx].data.m_bid_price << std::endl;
-            // std::cout << "Quote quant: " << processed_data_queue.data[current_idx].data.m_bid_quant << std::endl;
             processed_data_queue.data[current_idx].is_ready.store(true, std::memory_order_release);
             break;
         }
@@ -63,10 +61,58 @@ void MDProcessor::process_trade(const simdjson::dom::object& _obj){
 
         // Try to claim this slot atomically
         if (processed_data_queue.next_write_index.compare_exchange_weak(current_idx, current_idx + 1)) {
-            processed_data_queue.data[current_idx].data.m_type = md_type::PRINT;
-            processed_data_queue.data[current_idx].data.m_symbolId = mSymIDManager->getID(_obj["S"].get_string());
+            processed_data_queue.data[current_idx].data.m_type = md_type::NONE;
+            simdjson::dom::array conditions;
+            auto error = _obj.at_key("c").get(conditions);
+            if (!error) {
+                for(simdjson::dom::element val : conditions){
+                    int64_t code = val.get_int64();
+                    int64_t exchange = Shares(_obj["x"].get_int64());
+                    if(code == 16){
+                        if(exchange == 10){
+                            processed_data_queue.data[current_idx].data.m_type = md_type::NYSEOPEN;
+                            processed_data_queue.data[current_idx].data.m_ask_price = code;
+                            processed_data_queue.data[current_idx].data.m_ask_quant = exchange;
+                        }
+                        else if(exchange == 12){
+                            processed_data_queue.data[current_idx].data.m_type = md_type::NASDOPEN;
+                            processed_data_queue.data[current_idx].data.m_ask_price = code;
+                            processed_data_queue.data[current_idx].data.m_ask_quant = exchange;
+                        }
+                    }
+                }
+                if(processed_data_queue.data[current_idx].data.m_type == md_type::NONE)
+                    processed_data_queue.data[current_idx].data.m_type = md_type::PRINT;
+            }
+            else
+                processed_data_queue.data[current_idx].data.m_type = md_type::PRINT;
+            processed_data_queue.data[current_idx].data.m_symbolId = mSymIDManager->getID(_obj["sym"].get_string());
             processed_data_queue.data[current_idx].data.m_bid_price = roundToNearestCent(Price(_obj["p"].get_double() * DOLLAR));
-            processed_data_queue.data[current_idx].data.m_bid_quant = Shares(_obj["s"].get_int64() * 100);
+            processed_data_queue.data[current_idx].data.m_bid_quant = Shares(_obj["s"].get_int64());
+
+            //Timestamp conversion
+            processed_data_queue.data[current_idx].data.m_timestamp = _obj["t"].get_int64() * MILLI_SECONDS;
+            
+            processed_data_queue.data[current_idx].is_ready.store(true, std::memory_order_release);
+            break;
+        }
+    }
+}
+
+void MDProcessor::process_NYSE_imbalance(const simdjson::dom::object& _obj){
+    while(true){
+        uint8_t current_idx = processed_data_queue.next_write_index.load(std::memory_order_acquire);
+        // Check if data is ready
+        
+        if (processed_data_queue.data[current_idx].is_ready.load(std::memory_order_acquire)) continue;
+
+        // Try to claim this slot atomically
+        if (processed_data_queue.next_write_index.compare_exchange_weak(current_idx, current_idx + 1)) {
+            processed_data_queue.data[current_idx].data.m_type = md_type::IMBALANCE;
+            processed_data_queue.data[current_idx].data.m_symbolId = mSymIDManager->getID(_obj["T"].get_string());
+            processed_data_queue.data[current_idx].data.m_bid_price = roundToNearestCent(Price(_obj["b"].get_double() * DOLLAR));
+            processed_data_queue.data[current_idx].data.m_bid_quant = Shares(_obj["o"].get_int64());
+            processed_data_queue.data[current_idx].data.m_ask_quant = Shares(_obj["p"].get_int64());
 
             //Timestamp conversion
             processed_data_queue.data[current_idx].data.m_timestamp = parse_timestring(_obj["t"].get_string());
@@ -96,16 +142,21 @@ void MDProcessor::process_raw_data(){
 
             for(simdjson::dom::object obj : parser.parse(padded_json_string)){
                 for(const auto& key_value : obj) {
-                    if(key_value.key == "T"){
-                        std::string_view value = obj["T"].get_string();
-                        if(value == "q"){
+                    if(key_value.key == "ev"){
+                        std::string_view value = obj["ev"].get_string();
+                        if(value == "Q"){
                             // std::cout << "Quote recieved thread1: " << std::endl;
                             process_quote(obj);
                             continue;
                         }
-                        else if(value == "t"){
+                        else if(value == "T"){
                             // std::cout << "Trade recieved thread1: " << std::endl;
                             process_trade(obj);
+                            continue;
+                        }
+                        else if(value == "NOI"){
+                            // std::cout << "Trade recieved thread1: " << std::endl;
+                            //process_NYSE_Imbalance(obj);
                             continue;
                         }
                         else{
@@ -158,132 +209,5 @@ void MDProcessor::write_to_schmem(){
             // std::cout << "Trade quant: " << cur_md.m_bid_quant << std::endl;
             mShmemManager->write_MD(cur_md);
         }
-
-
-        // if(!queue1)
-        //     queue1 = try_pop(cur_md_1,thread_1_data);
-        // if(!queue2)
-        //     queue2 = try_pop(cur_md_2,thread_2_data);
-        // if(!queue3)
-        //     queue3 = try_pop(cur_md_3,thread_3_data);
-
-        // if(!queue1){
-        //     if(!queue2){
-        //         if(!queue3){
-        //             continue;
-        //         }
-        //         else{
-        //             std::cout << "Write to Shmem from thread3: " << std::endl;
-        //             std::cout << "Processed Trade price: " << cur_md_3.m_bid_price << std::endl;
-        //             std::cout << "Processed Trade quant: " << cur_md_3.m_bid_quant << std::endl;
-        //             mShmemManager->write_MD(cur_md_3);
-        //             queue3 = false;
-        //         }
-        //     }
-        //     else{
-        //         if(!queue3){
-        //             std::cout << "Write to Shmem from thread2: " << std::endl;
-        //             std::cout << "Processed Trade price: " << cur_md_2.m_bid_price << std::endl;
-        //             std::cout << "Processed Trade quant: " << cur_md_2.m_bid_quant << std::endl;
-        //             mShmemManager->write_MD(cur_md_2);
-        //             queue2 = false;
-        //         }
-        //         else{
-        //             if(cur_md_2.m_timestamp<=cur_md_3.m_timestamp){
-        //                 std::cout << "Write to Shmem from thread2: " << std::endl;
-        //                 std::cout << "Processed Trade price: " << cur_md_2.m_bid_price << std::endl;
-        //                 std::cout << "Processed Trade quant: " << cur_md_2.m_bid_quant << std::endl;
-        //                 mShmemManager->write_MD(cur_md_2);
-        //                 queue2 = false;
-        //             }
-        //             else{
-        //                 std::cout << "Write to Shmem from thread3: " << std::endl;
-        //                 std::cout << "Processed Trade price: " << cur_md_3.m_bid_price << std::endl;
-        //                 std::cout << "Processed Trade quant: " << cur_md_3.m_bid_quant << std::endl;
-        //                 mShmemManager->write_MD(cur_md_3);
-        //                 queue3 = false;
-        //             }
-        //         }
-        //     }
-        // }
-        // else{
-        //     if(!queue2){
-        //         if(!queue3){
-        //             std::cout << "Write to Shmem from thread1: " << std::endl;
-        //             std::cout << "Processed Trade price: " << cur_md_1.m_bid_price << std::endl;
-        //             std::cout << "Processed Trade quant: " << cur_md_1.m_bid_quant << std::endl;
-        //             mShmemManager->write_MD(cur_md_1);
-        //             queue1 = false;
-        //         }
-        //         else{
-        //             if(cur_md_1.m_timestamp<=cur_md_3.m_timestamp){
-        //                 std::cout << "Write to Shmem from thread1: " << std::endl;
-        //                 std::cout << "Processed Trade price: " << cur_md_1.m_bid_price << std::endl;
-        //                 std::cout << "Processed Trade quant: " << cur_md_1.m_bid_quant << std::endl;
-        //                 mShmemManager->write_MD(cur_md_1);
-        //                 queue1 = false;
-        //             }
-        //             else{
-        //                 std::cout << "Write to Shmem from thread3: " << std::endl;
-        //                 std::cout << "Processed Trade price: " << cur_md_3.m_bid_price << std::endl;
-        //                 std::cout << "Processed Trade quant: " << cur_md_3.m_bid_quant << std::endl;
-        //                 mShmemManager->write_MD(cur_md_3);
-        //                 queue3 = false;
-        //             }
-        //         }
-        //     }
-        //     else{
-        //         if(!queue3){
-        //             if(cur_md_1.m_timestamp<=cur_md_2.m_timestamp){
-        //                 std::cout << "Write to Shmem from thread1: " << std::endl;
-        //                 std::cout << "Processed Trade price: " << cur_md_1.m_bid_price << std::endl;
-        //                 std::cout << "Processed Trade quant: " << cur_md_1.m_bid_quant << std::endl;
-        //                 mShmemManager->write_MD(cur_md_1);
-        //                 queue1 = false;
-        //             }
-        //             else{
-        //                 std::cout << "Write to Shmem from thread2: " << std::endl;
-        //                 std::cout << "Processed Trade price: " << cur_md_2.m_bid_price << std::endl;
-        //                 std::cout << "Processed Trade quant: " << cur_md_2.m_bid_quant << std::endl;
-        //                 mShmemManager->write_MD(cur_md_2);
-        //                 queue2 = false;
-        //             }
-        //         }
-        //         else{
-        //             if(cur_md_2.m_timestamp<=cur_md_3.m_timestamp){
-        //                 if(cur_md_1.m_timestamp<=cur_md_2.m_timestamp){
-        //                     std::cout << "Write to Shmem from thread1: " << std::endl;
-        //                     std::cout << "Processed Trade price: " << cur_md_1.m_bid_price << std::endl;
-        //                     std::cout << "Processed Trade quant: " << cur_md_1.m_bid_quant << std::endl;
-        //                     mShmemManager->write_MD(cur_md_1);
-        //                     queue1 = false;
-        //                 }
-        //                 else{
-        //                     std::cout << "Write to Shmem from thread2: " << std::endl;
-        //                     std::cout << "Processed Trade price: " << cur_md_2.m_bid_price << std::endl;
-        //                     std::cout << "Processed Trade quant: " << cur_md_2.m_bid_quant << std::endl;
-        //                     mShmemManager->write_MD(cur_md_2);
-        //                     queue2 = false;
-        //                 }
-        //             }
-        //             else{
-        //                 if(cur_md_1.m_timestamp<=cur_md_3.m_timestamp){
-        //                     std::cout << "Write to Shmem from thread1: " << std::endl;
-        //                     std::cout << "Processed Trade price: " << cur_md_1.m_bid_price << std::endl;
-        //                     std::cout << "Processed Trade quant: " << cur_md_1.m_bid_quant << std::endl;
-        //                     mShmemManager->write_MD(cur_md_1);
-        //                     queue1 = false;
-        //                 }
-        //                 else{
-        //                     std::cout << "Write to Shmem from thread3: " << std::endl;
-        //                     std::cout << "Processed Trade price: " << cur_md_3.m_bid_price << std::endl;
-        //                     std::cout << "Processed Trade quant: " << cur_md_3.m_bid_quant << std::endl;
-        //                     mShmemManager->write_MD(cur_md_3);
-        //                     queue3 = false;
-        //                 }
-        //             }
-        //         }
-        //     }
-        // }
     }
 }

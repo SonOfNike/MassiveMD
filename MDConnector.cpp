@@ -15,34 +15,31 @@ void MDConnector::on_open(websocketpp::connection_hdl hdl, client* c) {
         std::cout << "Failed to get connection pointer: " << ec.message() << std::endl;
         return;
     }
-    simdjson::dom::element doc = MDConnector::parser.load("/home/git_repos/Confs/LIVE_auth.json");
+    simdjson::dom::element doc = MDConnector::parser.load("/home/git_repos/Confs/massive_auth.json");
     std::stringstream ss;
-    ss << R"({"action": "auth", "key": ")" << doc["key"].get_string() << R"(", "secret": ")" << doc["secret"].get_string() << R"("})"_padded;
+    ss << R"({"action": "auth", "params": ")" << doc["key"].get_string() << R"("})"_padded;
     auto auth_message_json = ss.str();
     char *auth_message = auth_message_json.data();
     c->send(con, auth_message, websocketpp::frame::opcode::text);
 
     std::stringstream sub_ss;
-    sub_ss << R"({"action":"subscribe","trades":[)";
+    sub_ss << R"({"action":"subscribe","params": ")";
 
     int size_of_map = mSymIDManager->string_to_id.size();
     
     int symbol_number = 1;
     for (const auto & [ key, value ] : mSymIDManager->string_to_id){
-        sub_ss << R"(")" << key << R"(")";
-        if(symbol_number != size_of_map) sub_ss << R"(,)";
-        symbol_number++;
+        sub_ss << R"(T.)" << key << R"(,)";
     }
 
-    sub_ss << R"(],"quotes":[)";
     symbol_number = 1;
     for(const auto& pair : mSymIDManager->string_to_id){
-        sub_ss << R"(")" << pair.first << R"(")";
+        sub_ss << R"(Q.)" << pair.first;
         if(symbol_number != size_of_map) sub_ss << R"(,)";
         symbol_number++;
     }
 
-    sub_ss << R"(]})"_padded;
+    sub_ss << R"("})"_padded;
 
     auto subscription_message_json = sub_ss.str();
 
