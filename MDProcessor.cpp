@@ -26,185 +26,222 @@ void MDProcessor::shutDown(){
     
 }
 
-void MDProcessor::process_quote(const simdjson::dom::object& _obj){
+void MDProcessor::process_quote(const simdjson::dom::object& _obj, const int& index){
+
+    uint8_t current_idx = processed_data_queues[index].next_write_index.load(std::memory_order_relaxed);;
 
     while(true){
-        uint8_t current_idx = processed_data_queue.next_write_index.load(std::memory_order_acquire);
         // Check if data is ready
         
-        if (processed_data_queue.data[current_idx].is_ready.load(std::memory_order_acquire)) continue;
-
-        // Try to claim this slot atomically
-        if (processed_data_queue.next_write_index.compare_exchange_weak(current_idx, current_idx + 1)) {
-            processed_data_queue.data[current_idx].data.m_type = md_type::QUOTE;
-            processed_data_queue.data[current_idx].data.m_symbolId = mSymIDManager->getID(_obj["sym"].get_string());
-            processed_data_queue.data[current_idx].data.m_bid_price = roundToNearestCent(Price(_obj["bp"].get_double() * DOLLAR));
-            processed_data_queue.data[current_idx].data.m_ask_price = roundToNearestCent(Price(_obj["ap"].get_double() * DOLLAR));
-            processed_data_queue.data[current_idx].data.m_bid_quant = Shares(_obj["bs"].get_int64() * 100);
-            processed_data_queue.data[current_idx].data.m_ask_quant = Shares(_obj["as"].get_int64() * 100);
-
-            //Timestamp conversion
-            processed_data_queue.data[current_idx].data.m_timestamp = _obj["t"].get_int64() * MILLI_SECONDS;
-
-            processed_data_queue.data[current_idx].is_ready.store(true, std::memory_order_release);
-            break;
+        if (processed_data_queues[index].data[current_idx].is_ready.load(std::memory_order_acquire)){
+            continue;
         }
+
+        processed_data_queues[index].data[current_idx].data.m_type = md_type::QUOTE;
+        processed_data_queues[index].data[current_idx].data.m_symbolId = mSymIDManager->getID(_obj["sym"].get_string());
+        processed_data_queues[index].data[current_idx].data.m_bid_price = roundToNearestCent(Price(_obj["bp"].get_double() * DOLLAR));
+        processed_data_queues[index].data[current_idx].data.m_ask_price = roundToNearestCent(Price(_obj["ap"].get_double() * DOLLAR));
+        processed_data_queues[index].data[current_idx].data.m_bid_quant = Shares(_obj["bs"].get_int64() * 100);
+        processed_data_queues[index].data[current_idx].data.m_ask_quant = Shares(_obj["as"].get_int64() * 100);
+
+        //Timestamp conversion
+        processed_data_queues[index].data[current_idx].data.m_timestamp = _obj["t"].get_int64() * MILLI_SECONDS;
+
+        processed_data_queues[index].data[current_idx].is_ready.store(true, std::memory_order_release);
+
+        processed_data_queues[index].next_write_index.store(current_idx + 1, std::memory_order_release);
+        break;
     }
 }
     
-void MDProcessor::process_trade(const simdjson::dom::object& _obj){
-    while(true){
-        uint8_t current_idx = processed_data_queue.next_write_index.load(std::memory_order_acquire);
-        // Check if data is ready
-        
-        if (processed_data_queue.data[current_idx].is_ready.load(std::memory_order_acquire)) continue;
+void MDProcessor::process_trade(const simdjson::dom::object& _obj, const int& index){
+    uint8_t current_idx = processed_data_queues[index].next_write_index.load(std::memory_order_relaxed);
 
-        // Try to claim this slot atomically
-        if (processed_data_queue.next_write_index.compare_exchange_weak(current_idx, current_idx + 1)) {
-            processed_data_queue.data[current_idx].data.m_type = md_type::NONE;
-            simdjson::dom::array conditions;
-            auto error = _obj.at_key("c").get(conditions);
-            if (!error) {
-                for(simdjson::dom::element val : conditions){
-                    int64_t code = val.get_int64();
-                    int64_t exchange = Shares(_obj["x"].get_int64());
-                    if(code == 16){
-                        if(exchange == 10){
-                            processed_data_queue.data[current_idx].data.m_type = md_type::NYSEOPEN;
-                            processed_data_queue.data[current_idx].data.m_ask_price = code;
-                            processed_data_queue.data[current_idx].data.m_ask_quant = exchange;
-                        }
-                        else if(exchange == 12){
-                            processed_data_queue.data[current_idx].data.m_type = md_type::NASDOPEN;
-                            processed_data_queue.data[current_idx].data.m_ask_price = code;
-                            processed_data_queue.data[current_idx].data.m_ask_quant = exchange;
-                        }
+    while(true){
+        // Check if data is ready
+        if (processed_data_queues[index].data[current_idx].is_ready.load(std::memory_order_acquire)){
+            continue;
+        }
+
+        processed_data_queues[index].data[current_idx].data.m_type = md_type::NONE;
+        simdjson::dom::array conditions;
+        auto error = _obj.at_key("c").get(conditions);
+        if (!error) {
+            for(simdjson::dom::element val : conditions){
+                int64_t code = val.get_int64();
+                int64_t exchange = Shares(_obj["x"].get_int64());
+                if(code == 16){
+                    if(exchange == 10){
+                        processed_data_queues[index].data[current_idx].data.m_type = md_type::NYSEOPEN;
+                        processed_data_queues[index].data[current_idx].data.m_ask_price = code;
+                        processed_data_queues[index].data[current_idx].data.m_ask_quant = exchange;
+                    }
+                    else if(exchange == 12){
+                        processed_data_queues[index].data[current_idx].data.m_type = md_type::NASDOPEN;
+                        processed_data_queues[index].data[current_idx].data.m_ask_price = code;
+                        processed_data_queues[index].data[current_idx].data.m_ask_quant = exchange;
                     }
                 }
-                if(processed_data_queue.data[current_idx].data.m_type == md_type::NONE)
-                    processed_data_queue.data[current_idx].data.m_type = md_type::PRINT;
             }
-            else
-                processed_data_queue.data[current_idx].data.m_type = md_type::PRINT;
-            processed_data_queue.data[current_idx].data.m_symbolId = mSymIDManager->getID(_obj["sym"].get_string());
-            processed_data_queue.data[current_idx].data.m_bid_price = roundToNearestCent(Price(_obj["p"].get_double() * DOLLAR));
-            processed_data_queue.data[current_idx].data.m_bid_quant = Shares(_obj["s"].get_int64());
-
-            //Timestamp conversion
-            processed_data_queue.data[current_idx].data.m_timestamp = _obj["t"].get_int64() * MILLI_SECONDS;
-            
-            processed_data_queue.data[current_idx].is_ready.store(true, std::memory_order_release);
-            break;
+            if(processed_data_queues[index].data[current_idx].data.m_type == md_type::NONE)
+                processed_data_queues[index].data[current_idx].data.m_type = md_type::PRINT;
         }
-    }
-}
+        else
+            processed_data_queues[index].data[current_idx].data.m_type = md_type::PRINT;
+        processed_data_queues[index].data[current_idx].data.m_symbolId = mSymIDManager->getID(_obj["sym"].get_string());
+        processed_data_queues[index].data[current_idx].data.m_bid_price = roundToNearestCent(Price(_obj["p"].get_double() * DOLLAR));
+        processed_data_queues[index].data[current_idx].data.m_bid_quant = Shares(_obj["s"].get_int64());
 
-void MDProcessor::process_NYSE_imbalance(const simdjson::dom::object& _obj){
-    while(true){
-        uint8_t current_idx = processed_data_queue.next_write_index.load(std::memory_order_acquire);
-        // Check if data is ready
+        //Timestamp conversion
+        processed_data_queues[index].data[current_idx].data.m_timestamp = _obj["t"].get_int64() * MILLI_SECONDS;
         
-        if (processed_data_queue.data[current_idx].is_ready.load(std::memory_order_acquire)) continue;
-
-        // Try to claim this slot atomically
-        if (processed_data_queue.next_write_index.compare_exchange_weak(current_idx, current_idx + 1)) {
-            processed_data_queue.data[current_idx].data.m_type = md_type::IMBALANCE;
-            processed_data_queue.data[current_idx].data.m_symbolId = mSymIDManager->getID(_obj["T"].get_string());
-            processed_data_queue.data[current_idx].data.m_bid_price = roundToNearestCent(Price(_obj["b"].get_double() * DOLLAR));
-            processed_data_queue.data[current_idx].data.m_bid_quant = Shares(_obj["o"].get_int64());
-            processed_data_queue.data[current_idx].data.m_ask_quant = Shares(_obj["p"].get_int64());
-
-            //Timestamp conversion
-            processed_data_queue.data[current_idx].data.m_timestamp = parse_timestring(_obj["t"].get_string());
-
-            // std::cout << "Trade price: " << processed_data_queue.data[current_idx].data.m_bid_price << std::endl;
-            // std::cout << "Trade quant: " << processed_data_queue.data[current_idx].data.m_bid_quant << std::endl;
-            processed_data_queue.data[current_idx].is_ready.store(true, std::memory_order_release);
-            break;
-        }
+        processed_data_queues[index].data[current_idx].is_ready.store(true, std::memory_order_release);
+        processed_data_queues[index].next_write_index.store(current_idx + 1, std::memory_order_release);
+        break;
     }
 }
 
-void MDProcessor::push_raw_data(std::string raw_json){
-    while(data_queue.data[data_queue.next_write_index].is_ready.load(std::memory_order_acquire));
-    data_queue.data[data_queue.next_write_index].data = std::move(raw_json);
-    data_queue.data[data_queue.next_write_index].is_ready.store(true, std::memory_order_release);
-    data_queue.next_write_index.fetch_add(1, std::memory_order_release);
+void MDProcessor::process_imbalance(const simdjson::dom::object& _obj, const int& index){
+    uint8_t current_idx = processed_data_queues[index].next_write_index.load(std::memory_order_relaxed);
+
+    while(true){
+        // Check if data is ready
+        if (processed_data_queues[index].data[current_idx].is_ready.load(std::memory_order_acquire)){
+            continue;
+        }
+
+        std::string_view auction_type = _obj["a"].get_string();
+        if(auction_type == "P" || auction_type == "R")
+            processed_data_queues[index].data[current_idx].data.m_type = md_type::SIGIMB;
+        else
+            processed_data_queues[index].data[current_idx].data.m_type = md_type::IMBALANCE;
+        processed_data_queues[index].data[current_idx].data.m_symbolId = mSymIDManager->getID(_obj["T"].get_string());
+        
+        processed_data_queues[index].data[current_idx].data.m_bid_price = roundToNearestCent(Price(_obj["b"].get_double() * DOLLAR));
+        
+        processed_data_queues[index].data[current_idx].data.m_bid_quant = Shares(_obj["o"].get_int64());
+        processed_data_queues[index].data[current_idx].data.m_ask_quant = Shares(_obj["p"].get_int64());
+        processed_data_queues[index].data[current_idx].data.m_ask_price = _obj["x"].get_int64();
+
+        //Timestamp conversion
+        processed_data_queues[index].data[current_idx].data.m_timestamp = _obj["t"].get_int64();
+
+        // std::cout << "Trade price: " << processed_data_queue.data[current_idx].data.m_bid_price << std::endl;
+        // std::cout << "Trade quant: " << processed_data_queue.data[current_idx].data.m_bid_quant << std::endl;
+        processed_data_queues[index].data[current_idx].is_ready.store(true, std::memory_order_release);
+        processed_data_queues[index].next_write_index.store(current_idx + 1, std::memory_order_release);
+        break;
+    }
 }
 
-void MDProcessor::process_raw_data(){
-    std::string data;
+void MDProcessor::push_raw_data(const std::string& raw_json){
+    auto& target_queue = data_queues[current_raw_queue % 3];
+    uint8_t write_idx = target_queue.next_write_index.load(std::memory_order_relaxed);;
+
+    while(target_queue.data[write_idx].is_ready.load(std::memory_order_acquire));
+
+    // 3. Copy data into our pre-allocated padded buffer
+    // This is a "Zero-Allocation" move after the initial socket read
+    size_t copy_len = std::min(raw_json.size(), MAX_SIZE);
+    std::memcpy(target_queue.data[write_idx].buffer, raw_json.data(), copy_len);
+    target_queue.data[write_idx].len = copy_len;
+    
+    // 4. Mark as ready for the Parser thread
+    target_queue.data[write_idx].is_ready.store(true, std::memory_order_release);
+    
+    // 5. Update index for next push
+    target_queue.next_write_index.store(write_idx + 1, std::memory_order_release);
+
+    current_raw_queue++;
+}
+
+void MDProcessor::process_raw_data(const int& index){
+    // Pin this thread to a core (Core 2, 3, or 4 based on index)
+    // pin_thread_to_core(index + 2);
+
     simdjson::dom::parser parser;
 
     while(true){
-        if(try_pop(data)){
-            simdjson::padded_string padded_json_string(data);
+        RawBlock* block = try_pop(index);
 
-            for(simdjson::dom::object obj : parser.parse(padded_json_string)){
-                for(const auto& key_value : obj) {
-                    if(key_value.key == "ev"){
-                        std::string_view value = obj["ev"].get_string();
-                        if(value == "Q"){
-                            // std::cout << "Quote recieved thread1: " << std::endl;
-                            process_quote(obj);
-                            continue;
-                        }
-                        else if(value == "T"){
-                            // std::cout << "Trade recieved thread1: " << std::endl;
-                            process_trade(obj);
-                            continue;
-                        }
-                        else if(value == "NOI"){
-                            // std::cout << "Trade recieved thread1: " << std::endl;
-                            //process_NYSE_Imbalance(obj);
-                            continue;
-                        }
-                        else{
-                            continue;
+        if(block){
+            auto result = parser.parse(block->buffer, block->len);
+
+            if(!result.error()){
+                for(simdjson::dom::object obj : result){
+                    simdjson::dom::element ev_field;
+                    if (obj["ev"].get(ev_field) == simdjson::SUCCESS){
+
+                        std::string_view type = ev_field.get_string();
+
+                        switch(type[0]){
+                            case 'Q': 
+                                process_quote(obj, index);
+                                continue;
+                            case 'T': 
+                                process_trade(obj, index);
+                                continue;
+                            case 'N': 
+                                process_imbalance(obj, index);
+                                continue;
                         }
                     }
                 }
             }
+
+            release_slot(index);
+
         }
     }
 }
 
-bool MDProcessor::try_pop(std::string& output){
-    uint8_t current_idx = data_queue.next_read_index.load(std::memory_order_acquire);
+RawBlock* MDProcessor::try_pop(const int& index){
+    auto& queue = data_queues[index];
+    uint8_t read_idx = queue.next_read_index.load(std::memory_order_relaxed);
+
     // Check if data is ready
-    if (!data_queue.data[current_idx].is_ready.load(std::memory_order_acquire)) return false;
-
-    // Try to claim this slot atomically
-    if (data_queue.next_read_index.compare_exchange_weak(current_idx, current_idx + 1)) {
-        output = std::move(data_queue.data[current_idx].data);
-        data_queue.data[current_idx].is_ready.store(false, std::memory_order_release);
-        return true;
+    if (!queue.data[read_idx].is_ready.load(std::memory_order_acquire)) {
+        return nullptr;
     }
-
-    return false; // Someone else beat us to it
+    // Return the address of the data directly
+    return &queue.data[read_idx];
 }
 
-bool MDProcessor::try_pop(MDupdate& output){
-    uint8_t current_idx = processed_data_queue.next_read_index.load(std::memory_order_acquire);
-    // Check if data is ready
-    if (!processed_data_queue.data[current_idx].is_ready.load(std::memory_order_acquire)) return false;
+void MDProcessor::release_slot(const int& index){
+    auto& queue = data_queues[index];
+    uint8_t read_idx = queue.next_read_index.load(std::memory_order_relaxed);
+    
+    queue.data[read_idx].is_ready.store(false, std::memory_order_release);
+    queue.next_read_index.store(read_idx + 1, std::memory_order_release);
+}
 
-    if (processed_data_queue.next_read_index.compare_exchange_weak(current_idx, current_idx + 1)) {
+bool MDProcessor::try_pop(MDupdate& output, const int& index){
+    // Check if data is ready
+    if (!processed_data_queues[index].data[processed_data_queues[index].next_read_index].is_ready.load(std::memory_order_acquire)) return false;
+
         // std::cout << "Processed Trade price: " << processed_data_queue.data[current_idx].data.m_bid_price << std::endl;
         // std::cout << "Processed Trade quant: " << processed_data_queue.data[current_idx].data.m_bid_quant << std::endl;
-        output = processed_data_queue.data[current_idx].data;
-        processed_data_queue.data[current_idx].is_ready.store(false, std::memory_order_release);
-        return true;
-    }
-
-    return false;
+    output = processed_data_queues[index].data[processed_data_queues[index].next_read_index].data;
+    processed_data_queues[index].data[processed_data_queues[index].next_read_index].is_ready.store(false, std::memory_order_release);
+    processed_data_queues[index].next_read_index++;
+    return true;
 }
 
 void MDProcessor::write_to_schmem(){
     MDupdate cur_md;
     
     while(true){
-        if(try_pop(cur_md)){
+        if(try_pop(cur_md, 0)){
+            // std::cout << "Trade price: " << cur_md.m_bid_price << std::endl;
+            // std::cout << "Trade quant: " << cur_md.m_bid_quant << std::endl;
+            mShmemManager->write_MD(cur_md);
+        }
+        if(try_pop(cur_md, 1)){
+            // std::cout << "Trade price: " << cur_md.m_bid_price << std::endl;
+            // std::cout << "Trade quant: " << cur_md.m_bid_quant << std::endl;
+            mShmemManager->write_MD(cur_md);
+        }
+        if(try_pop(cur_md, 2)){
             // std::cout << "Trade price: " << cur_md.m_bid_price << std::endl;
             // std::cout << "Trade quant: " << cur_md.m_bid_quant << std::endl;
             mShmemManager->write_MD(cur_md);

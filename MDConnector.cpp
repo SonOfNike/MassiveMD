@@ -27,12 +27,17 @@ void MDConnector::on_open(websocketpp::connection_hdl hdl, client* c) {
 
     int size_of_map = mSymIDManager->string_to_id.size();
     
-    int symbol_number = 1;
     for (const auto & [ key, value ] : mSymIDManager->string_to_id){
         sub_ss << R"(T.)" << key << R"(,)";
     }
 
-    symbol_number = 1;
+    simdjson::dom::element imb_doc = MDConnector::parser.load("/home/git_repos/Utils/imb_symbols.json");
+    for(auto symbol : imb_doc["symbols"])
+    {
+        sub_ss << R"(NOI.)" << std::string(symbol) << R"(,)";
+    }
+
+    int symbol_number = 1;
     for(const auto& pair : mSymIDManager->string_to_id){
         sub_ss << R"(Q.)" << pair.first;
         if(symbol_number != size_of_map) sub_ss << R"(,)";
@@ -49,9 +54,7 @@ void MDConnector::on_open(websocketpp::connection_hdl hdl, client* c) {
 
 void MDConnector::on_message(websocketpp::connection_hdl, client::message_ptr msg) {
     // std::cout << "Received message: " << msg->get_payload() << std::endl;
-
     mMDProcessor->push_raw_data(msg->get_payload());
-
 }
 
 void MDConnector::on_fail(websocketpp::connection_hdl hdl) {
@@ -105,6 +108,10 @@ void MDConnector::connect() {
         c.clear_access_channels(websocketpp::log::alevel::frame_payload);
         c.set_error_channels(websocketpp::log::elevel::all);
         c.init_asio();
+
+        c.clear_access_channels(websocketpp::log::alevel::all);
+        c.clear_access_channels(websocketpp::log::alevel::frame_header);
+        c.clear_access_channels(websocketpp::log::alevel::control);
       
         c.set_message_handler(&on_message);
         c.set_tls_init_handler(bind(&on_tls_init, hostname.c_str(), ::_1));
@@ -112,7 +119,8 @@ void MDConnector::connect() {
         c.set_open_handler(bind(&on_open, ::_1, &c));
         c.set_fail_handler(bind(&on_fail, ::_1));
         c.set_close_handler(bind(&on_close, ::_1));
-        c.set_error_channels(websocketpp::log::elevel::all);  // Enable detailed error logging
+        // c.set_error_channels(websocketpp::log::elevel::all);  // Enable detailed error logging
+        c.set_error_channels(websocketpp::log::elevel::warn | websocketpp::log::elevel::rerror | websocketpp::log::elevel::fatal);
         websocketpp::lib::error_code ec;
         client::connection_ptr con = c.get_connection(uri, ec);
         if (ec) {
