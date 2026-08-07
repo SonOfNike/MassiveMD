@@ -44,12 +44,14 @@ void ShmemManager::shutDown(){
 }
 
 void ShmemManager::write_MD(const MDupdate& _md_update){
+
+    auto current_index = _md_update.m_symbolId % TRADE_WTHREADS;
     // std::cout << "Schmem Trade price: " << _md_update.m_bid_price << std::endl;
     // std::cout << "Schmem Trade quant: " << _md_update.m_bid_quant << std::endl;
-    md_shmem->m_queue[md_shmem->next_write_index] = _md_update;
-    md_shmem->next_write_index.fetch_add(1, std::memory_order_release);
-    if(md_shmem->next_write_index >= MD_QUEUE_SIZE){
-        md_shmem->next_write_index.store(0, std::memory_order_release);
-        md_shmem->next_write_page++;
+    md_shmem->slot[current_index].m_queue[md_shmem->slot[current_index].next_write_index] = _md_update;
+    md_shmem->slot[current_index].next_write_index.fetch_add(1, std::memory_order_release);
+    if(md_shmem->slot[current_index].next_write_index >= MD_QUEUE_SIZE){
+        md_shmem->slot[current_index].next_write_index.store(0, std::memory_order_release);
+        md_shmem->slot[current_index].next_write_page++;
     }
 }

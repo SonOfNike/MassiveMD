@@ -12,6 +12,7 @@ add_executable(MassiveMD main.cpp
                          ShmemManager.cpp
                          MDProcessor.cpp
                          ../Utils/SymbolIDManager.cpp
+                         ../Utils/pin_thread_functions.cpp
                          ../Utils/simdjson/simdjson.cpp)
 
 target_link_libraries(MassiveMD PRIVATE OpenSSL::SSL OpenSSL::Crypto)

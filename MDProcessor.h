@@ -5,12 +5,8 @@
 #include "../Utils/simdjson/simdjson.h"
 #include "ShmemManager.h"
 #include "../Utils/SymbolIDManager.h"
+#include "../Utils/pin_thread_functions.h"
 #include <atomic>
-
-struct Slot{
-    std::string data;
-    std::atomic<bool> is_ready{false};
-};
 
 static constexpr size_t MAX_SIZE = 4096;
 
@@ -21,7 +17,7 @@ struct RawBlock {
     std::atomic<bool> is_ready{false};
 };
 
-struct MDSlot{
+struct ProcessedSlot{
     MDupdate data;
     std::atomic<bool> is_ready{false};
 };
@@ -33,7 +29,7 @@ struct RawData{
 };
 
 struct ProcessedData{
-    alignas(64) MDSlot data[256];
+    alignas(64) ProcessedSlot data[256];
     alignas(64) std::atomic<uint8_t> next_write_index = 0;
     alignas(64) std::atomic<uint8_t> next_read_index = 0;
 };
